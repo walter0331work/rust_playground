@@ -1,4 +1,4 @@
-use regex::Regex;
+use fancy_regex::Regex;
 use scraper::{ElementRef, Html, Selector};
 use std::error::Error;
 
@@ -8,6 +8,7 @@ pub struct TonNumber {
     full_link: String,
     status: String,
     timer_text: String,
+    timer_time: String,
 }
 
 impl TonNumber {
@@ -15,95 +16,97 @@ impl TonNumber {
         let r_number: Regex = Regex::new(r"(\d)").unwrap();
         let nums = r_number
             .find_iter(&self.number)
-            .map(|m| m.as_str().parse::<i32>().unwrap())
+            .map(|m| m.unwrap().as_str().parse::<i32>().unwrap())
             .collect::<Vec<i32>>();
 
         nums
     }
 }
 
-trait DomUtils {
-    fn get_text_content(&self) -> String;
-    fn get_attr(&self, attr: &str) -> String;
-    fn query_selector(&self, css_selector: &str) -> Option<Self>
-    where
-        Self: Sized;
-    fn query_selector_all(&self, css_selector: &str) -> Vec<Self>
-    where
-        Self: Sized;
+// #[derive(Debug, Clone)]
+struct DOMUtils<'a> {
+    data: Vec<ElementRef<'a>>,
 }
-impl<'a> DomUtils for ElementRef<'a> {
-    fn get_text_content(&self) -> String {
-        let value = self.text().collect::<Vec<_>>().join("");
 
-        value
-    }
-
-    fn get_attr(&self, attr: &str) -> String {
-        let value = self.value().attr(attr).unwrap_or("").to_string();
-
-        value
-    }
-
-    fn query_selector_all(&self, css_selector: &str) -> Vec<ElementRef<'a>> {
-        if let Ok(selector) = Selector::parse(css_selector) {
-            self.select(&selector)
-                .into_iter()
-                .collect::<Vec<ElementRef>>()
-        } else {
-            Vec::new()
+impl<'a> DOMUtils<'a> {
+    fn new(element_ref: ElementRef<'a>) -> DOMUtils<'a> {
+        DOMUtils {
+            data: vec![element_ref],
         }
     }
 
-    fn query_selector(&self, css_selector: &str) -> Option<ElementRef<'a>> {
-        let list = self.query_selector_all(css_selector);
-        let value = list.first().cloned();
+    fn from_document(document: &'a Html) -> DOMUtils<'a> {
+        let root_element = document.root_element();
 
-        value
+        DOMUtils {
+            data: vec![root_element],
+        }
+    }
+
+    fn value(&self) -> &Vec<ElementRef<'a>> {
+        &self.data
+    }
+
+    fn text(&self) -> String {
+        self.data
+            .to_owned()
+            .into_iter()
+            .fold("".to_string(), |acc: String, item| {
+                acc + &item.text().into_iter().collect::<Vec<_>>().join("")
+            })
+    }
+
+    fn attr(&self, name: &str) -> String {
+        self.data[0].value().attr(name).unwrap_or("").to_string()
+    }
+
+    fn select(&self, css_selector: &str) -> DOMUtils<'a> {
+        let selector = Selector::parse(css_selector).unwrap();
+        let data = self.data[0]
+            .select(&selector)
+            .into_iter()
+            .collect::<Vec<ElementRef>>();
+
+        DOMUtils { data }
     }
 }
 
 pub async fn scrape(url: &str) -> Result<Vec<TonNumber>, Box<dyn Error>> {
     let res = reqwest::get(url).await?;
     let raw_html = res.text().await?;
-
     let document = Html::parse_document(&raw_html);
-    let search_result_selector = Selector::parse(".js-search-results .tm-row-selectable")?;
-
-    let result = document
-        .select(&search_result_selector)
+    let root_element = DOMUtils::from_document(&document);
+    let result = root_element
+        .select(".js-search-results .tm-row-selectable")
+        .value()
+        .into_iter()
         .map(|record| {
-            let path = record
-                .query_selector("a")
-                .map(|i| i.get_attr("href"))
-                .unwrap_or(String::from(""));
+            let element_ref = *record;
+            let path = DOMUtils::new(element_ref).select("a").attr("href");
 
             let full_link = format!("https://fragment.com{}", &path);
 
-            let number = record
-                .query_selector(".table-cell-value.tm-value")
-                .map(|i| i.get_text_content())
-                .unwrap_or(String::from(""));
+            let number = DOMUtils::new(element_ref)
+                .select(".table-cell-value.tm-value")
+                .text();
 
-            let timer_text = record
-                .query_selector(".tm-timer")
-                .map(|i| i.get_text_content())
-                .unwrap_or(String::from(""));
+            let timer_element = DOMUtils::new(element_ref).select(".tm-timer");
+            let timer_text = timer_element.text();
+            let timer_time = timer_element.select("time").attr("datetime");
 
-            let status = record
-                .query_selector(".table-cell-status-thin")
-                .map(|i| i.get_text_content())
-                .unwrap_or(String::from(""));
+            let status = DOMUtils::new(element_ref)
+                .select(".table-cell-status-thin")
+                .text();
 
             TonNumber {
                 number,
                 full_link,
                 status,
                 timer_text,
+                timer_time,
             }
         })
         .collect::<Vec<TonNumber>>();
-
     Ok(result)
 }
 
@@ -134,47 +137,3 @@ mod test {
         }
     }
 }
-
-// struct DomQuery {
-//     root_element: HTMLElement
-// }
-
-// trait DomQueryTrait {
-//     fn select(&self, css_selector: &str) -> SelectResult,
-// }
-
-// impl DomQuery {
-//     fn from_html(raw_html: &str) -> Self {
-//         DomQuery { root_element: () }
-//     }
-// }
-
-// struct HTMLElement {
-//     text_content: String,
-//     inner_html: String
-// }
-// //<div><a>content1</a></div> <div><a>conten2</a></div>
-
-// struct SelectResult {
-//     css_selector: &str,
-//     data: Vec<HTMLElement>
-// }
-
-// trait SelectResultTrait {
-//     fn value(&self) -> Vec<HTMLElement>;
-//     fn text(&self) -> String;
-// }
-
-// impl SelectResultTrait for  SelectResult {
-//     fn value(&self) -> Vec<HTMLElement> {
-//         self.data
-//     }
-//     fn text(&self) -> String {
-//         let value = String::from("");
-//         self.value().into_iter().for_each(|element| {
-//             value = value + &element.text_content;
-//         });
-
-//         value
-//     }
-// }
